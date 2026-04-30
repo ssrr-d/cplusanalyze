@@ -18,6 +18,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", type=Path, default=Path("docs"), help="出力ディレクトリ")
     parser.add_argument("--ai", action="store_true", help="OpenAI APIで設計書を補強します")
     parser.add_argument("--model", default=None, help="AIで使用するモデル名")
+    parser.add_argument("--clang", action="store_true", help="libclang AST解析で詳細情報を補強します")
+    parser.add_argument("--compile-commands", type=Path, default=None, help="compile_commands.json のパス")
+    parser.add_argument("--libclang", type=Path, default=None, help="libclang.dll / libclang.so のパス")
+    parser.add_argument("--clang-arg", action="append", default=[], help="clang解析に追加する引数。複数指定できます")
     return parser
 
 
@@ -28,7 +32,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.project.exists() or not args.project.is_dir():
         parser.error(f"解析対象ディレクトリが見つかりません: {args.project}")
 
-    result = analyze_project(args.project)
+    result = analyze_project(
+        args.project,
+        use_clang=args.clang,
+        compile_commands=args.compile_commands,
+        libclang=args.libclang,
+        clang_args=args.clang_arg,
+    )
     write_reports(result, args.out)
 
     if args.ai:

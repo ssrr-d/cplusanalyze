@@ -8,6 +8,8 @@ dependencies = []
 
 [project.optional-dependencies]
 ai = ["openai>=1.0.0"]
+clang = ["clang>=18.1.0"]
+all = ["openai>=1.0.0", "clang>=18.1.0"]
 
 [project.scripts]
 cplusanalyze = "cplusanalyze.cli:main"

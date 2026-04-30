@@ -83,6 +83,12 @@ class FunctionInfo:
     writes_globals: list[str] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
     variable_ranges: dict[str, list[str]] = field(default_factory=dict)
+    conditions: list[str] = field(default_factory=list)
+    return_expressions: list[str] = field(default_factory=list)
+    member_reads: list[str] = field(default_factory=list)
+    member_writes: list[str] = field(default_factory=list)
+    parameter_writes: list[str] = field(default_factory=list)
+    external_effects: list[dict[str, str]] = field(default_factory=list)
     body: str = field(default="", repr=False)
 
     def to_dict(self) -> dict:
@@ -98,6 +104,12 @@ class FunctionInfo:
             "writes_globals": self.writes_globals,
             "calls": self.calls,
             "variable_ranges": self.variable_ranges,
+            "conditions": self.conditions,
+            "return_expressions": self.return_expressions,
+            "member_reads": self.member_reads,
+            "member_writes": self.member_writes,
+            "parameter_writes": self.parameter_writes,
+            "external_effects": self.external_effects,
         }
 
 
@@ -131,6 +143,7 @@ class AnalysisResult:
     functions: list[FunctionInfo]
     classes: list[ClassInfo]
     warnings: list[str] = field(default_factory=list)
+    analysis_mode: str = "lightweight"
 
     def to_dict(self) -> dict:
         return {
@@ -140,10 +153,18 @@ class AnalysisResult:
             "functions": [function.to_dict() for function in self.functions],
             "classes": [class_info.to_dict() for class_info in self.classes],
             "warnings": self.warnings,
+            "analysis_mode": self.analysis_mode,
         }
 
 
-def analyze_project(root: Path) -> AnalysisResult:
+def analyze_project(
+    root: Path,
+    *,
+    use_clang: bool = False,
+    compile_commands: Path | None = None,
+    libclang: Path | None = None,
+    clang_args: list[str] | None = None,
+) -> AnalysisResult:
     root = root.resolve()
     files = sorted(path for path in root.rglob("*") if path.suffix.lower() in CPP_EXTENSIONS)
     globals_by_name: dict[str, GlobalVariable] = {}
@@ -167,7 +188,7 @@ def analyze_project(root: Path) -> AnalysisResult:
     link_class_methods(functions, classes)
     link_global_usage(functions, globals_by_name)
 
-    return AnalysisResult(
+    result = AnalysisResult(
         root=str(root),
         files=[str(path.relative_to(root)) for path in files],
         globals=sorted(globals_by_name.values(), key=lambda item: (item.location.file, item.location.line, item.name)),
@@ -175,6 +196,21 @@ def analyze_project(root: Path) -> AnalysisResult:
         classes=sorted(classes, key=lambda item: (item.location.file, item.location.line, item.name)),
         warnings=warnings,
     )
+    if use_clang:
+        try:
+            from .clang_analyzer import supplement_with_clang
+
+            supplement_with_clang(
+                result,
+                root,
+                compile_commands=compile_commands,
+                libclang=libclang,
+                extra_args=clang_args or [],
+            )
+            result.analysis_mode = "clang"
+        except Exception as exc:
+            result.warnings.append(f"clang詳細解析をスキップしました: {exc}")
+    return result
 
 
 def strip_comments_and_strings(text: str) -> str:
@@ -402,6 +438,8 @@ def find_functions(relative_file: str, text: str) -> list[FunctionInfo]:
                 end_line=end_line,
                 calls=find_calls(body),
                 variable_ranges=find_variable_ranges(body),
+                conditions=find_conditions(body),
+                return_expressions=find_return_expressions(body),
                 body=body,
             )
         )
@@ -463,6 +501,22 @@ def find_variable_ranges(body: str) -> dict[str, list[str]]:
     for match in assignment_pattern.finditer(body):
         ranges.setdefault(match.group("var"), set()).add(f"assigned {match.group('value')}")
     return {name: sorted(values) for name, values in ranges.items()}
+
+
+def find_conditions(body: str) -> list[str]:
+    conditions = set()
+    for match in re.finditer(r"\b(?:if|while|for)\s*\((?P<condition>[^{};]*)\)", body):
+        condition = " ".join(match.group("condition").split())
+        if condition:
+            conditions.add(condition)
+    return sorted(conditions)
+
+
+def find_return_expressions(body: str) -> list[str]:
+    returns = set()
+    for match in re.finditer(r"\breturn\s+(?P<expr>[^;]+);", body):
+        returns.add(" ".join(match.group("expr").split()))
+    return sorted(returns)
 
 
 def link_global_usage(functions: list[FunctionInfo], globals_by_name: dict[str, GlobalVariable]) -> None:

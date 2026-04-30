@@ -36,6 +36,7 @@ def render_markdown(result: AnalysisResult) -> str:
     lines: list[str] = []
     lines.append("# C++解析設計書")
     lines.append("")
+    lines.append(f"- 解析モード: `{result.analysis_mode}`")
     lines.append(f"- 解析ルート: `{result.root}`")
     lines.append(f"- 対象ファイル数: {len(result.files)}")
     lines.append(f"- クラス/構造体候補: {len(result.classes)}")
@@ -91,9 +92,9 @@ def render_markdown(result: AnalysisResult) -> str:
 
     lines.append("## 解析メモ")
     lines.append("")
-    lines.append("- この結果は軽量な字句解析ベースの候補です。確定仕様ではなく、レビューの起点として扱ってください。")
-    lines.append("- マクロ、テンプレート、条件コンパイル、複雑なC++構文は誤検出または未検出になる場合があります。")
-    lines.append("- 精度を上げる場合は、`compile_commands.json` と libclang/clangd を使うAST解析の追加が次の拡張候補です。")
+    lines.append("- lightweightモードは字句解析ベースの候補です。")
+    lines.append("- clangモードはlibclang ASTから条件式、return、メンバ更新、引数更新、外部影響候補を補強します。")
+    lines.append("- マクロ、テンプレート、条件コンパイル、動的ディスパッチは手動レビューで補正してください。")
     lines.append("")
     return "\n".join(lines)
 
@@ -111,7 +112,7 @@ def render_class_markdown(class_info: ClassInfo, functions: list[FunctionInfo]) 
 
     lines.append("## 役割")
     lines.append("")
-    lines.append("- 静的解析だけでは業務上の役割は確定できません。クラス名、メンバ変数、メソッド名からレビュー時に補完してください。")
+    lines.append("- 静的解析だけでは業務上の役割は確定できません。メンバ、公開メソッド、外部影響からレビュー時に補完してください。")
     lines.append("")
 
     lines.append("## メンバ変数")
@@ -144,10 +145,16 @@ def render_class_markdown(class_info: ClassInfo, functions: list[FunctionInfo]) 
     lines.append(f"- 書き込み候補: {format_names(written_globals)}")
     lines.append("")
 
+    lines.append("## 外部への影響")
+    lines.append("")
+    effects = [effect for function in functions for effect in function.external_effects]
+    lines.append(f"- 外部影響候補: {format_external_effects(effects)}")
+    lines.append("")
+
     lines.append("## 注意点")
     lines.append("")
     lines.append("- このファイルはクラス宣言とメソッド定義候補をもとに自動生成されています。")
-    lines.append("- インライン定義、マクロ、テンプレート、条件コンパイルを含む場合は手動レビューで補正してください。")
+    lines.append("- clangモードで生成した場合も、動的呼び出しやマクロ展開後の意味は手動レビューしてください。")
     lines.append("")
     return "\n".join(lines)
 
@@ -160,8 +167,14 @@ def render_function_section(function: FunctionInfo) -> list[str]:
     lines.append(f"- 場所: `{function.location.file}:{function.location.line}-{function.end_line}`")
     lines.append(f"- 戻り値: `{function.return_type}`")
     lines.append(f"- 引数: {format_parameters(function.parameters)}")
+    lines.append(f"- 条件分岐/ループ条件: {format_names(function.conditions)}")
+    lines.append(f"- return式: {format_names(function.return_expressions)}")
+    lines.append(f"- メンバ読み取り候補: {format_names(function.member_reads)}")
+    lines.append(f"- メンバ書き込み候補: {format_names(function.member_writes)}")
+    lines.append(f"- 引数書き込み候補: {format_names(function.parameter_writes)}")
     lines.append(f"- グローバル読み取り候補: {format_names(function.reads_globals)}")
     lines.append(f"- グローバル書き込み候補: {format_names(function.writes_globals)}")
+    lines.append(f"- 外部影響候補: {format_external_effects(function.external_effects)}")
     lines.append(f"- 呼び出し候補: {format_names(function.calls)}")
     lines.append(f"- 変数レンジの手掛かり: {format_ranges(function.variable_ranges)}")
     lines.append("")
@@ -196,6 +209,12 @@ def format_ranges(ranges: dict[str, list[str]]) -> str:
     if not ranges:
         return "(なし)"
     return "; ".join(f"`{name}`: {', '.join(values)}" for name, values in ranges.items())
+
+
+def format_external_effects(effects: list[dict[str, str]]) -> str:
+    if not effects:
+        return "(なし)"
+    return ", ".join(f"`{effect['kind']}:{effect['symbol']}`" for effect in effects)
 
 
 def safe_filename(value: str) -> str:
