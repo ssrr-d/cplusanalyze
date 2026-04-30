@@ -3,6 +3,20 @@
 int g_count = 0;
 static bool g_enabled = true;
 
+class Counter {
+public:
+    Counter() : value_(0) {}
+
+    int add(int delta)
+    {
+        value_ += delta;
+        return addCount(delta);
+    }
+
+private:
+    int value_;
+};
+
 int addCount(int delta)
 {
     if (delta < 0) {
@@ -17,7 +31,8 @@ int addCount(int delta)
 
 int main()
 {
-    int result = addCount(5);
+    Counter counter;
+    int result = counter.add(5);
     std::cout << result << std::endl;
     return 0;
 }

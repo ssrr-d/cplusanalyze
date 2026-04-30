@@ -39,8 +39,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     print(f"解析完了: {args.out.resolve()}")
-    print(f"- analysis.json")
-    print(f"- design.md")
+    print("- analysis.json")
+    print("- design.md")
+    print("- classes/*.md")
     if args.ai:
-        print(f"- ai_design.md")
+        print("- ai_design.md")
     return 0

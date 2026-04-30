@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
-from .analyzer import AnalysisResult
+from .analyzer import AnalysisResult, ClassInfo, FunctionInfo
 
 
 def write_reports(result: AnalysisResult, out_dir: Path) -> None:
@@ -13,6 +14,22 @@ def write_reports(result: AnalysisResult, out_dir: Path) -> None:
         encoding="utf-8",
     )
     (out_dir / "design.md").write_text(render_markdown(result), encoding="utf-8")
+    write_class_reports(result, out_dir / "classes")
+
+
+def write_class_reports(result: AnalysisResult, classes_dir: Path) -> None:
+    classes_dir.mkdir(parents=True, exist_ok=True)
+    functions_by_class: dict[str, list[FunctionInfo]] = {}
+    for function in result.functions:
+        if function.class_name:
+            functions_by_class.setdefault(function.class_name, []).append(function)
+
+    for class_info in result.classes:
+        filename = safe_filename(class_info.name) + ".md"
+        (classes_dir / filename).write_text(
+            render_class_markdown(class_info, functions_by_class.get(class_info.name, [])),
+            encoding="utf-8",
+        )
 
 
 def render_markdown(result: AnalysisResult) -> str:
@@ -21,6 +38,7 @@ def render_markdown(result: AnalysisResult) -> str:
     lines.append("")
     lines.append(f"- 解析ルート: `{result.root}`")
     lines.append(f"- 対象ファイル数: {len(result.files)}")
+    lines.append(f"- クラス/構造体候補: {len(result.classes)}")
     lines.append(f"- グローバル変数候補: {len(result.globals)}")
     lines.append(f"- 関数/メソッド候補: {len(result.functions)}")
     lines.append("")
@@ -30,6 +48,22 @@ def render_markdown(result: AnalysisResult) -> str:
         lines.append("")
         for warning in result.warnings:
             lines.append(f"- {warning}")
+        lines.append("")
+
+    lines.append("## クラス/構造体")
+    lines.append("")
+    if not result.classes:
+        lines.append("クラス/構造体候補は見つかりませんでした。")
+        lines.append("")
+    for class_info in result.classes:
+        lines.append(f"### `{class_info.name}`")
+        lines.append("")
+        lines.append(f"- 種別: `{class_info.kind}`")
+        lines.append(f"- 宣言: `{class_info.location.file}:{class_info.location.line}-{class_info.end_line}`")
+        lines.append(f"- 継承/基底: {format_names(class_info.bases)}")
+        lines.append(f"- メンバ変数候補: {format_members(class_info.members)}")
+        lines.append(f"- メソッド候補: {format_names(class_info.methods)}")
+        lines.append(f"- 個別設計書: `classes/{safe_filename(class_info.name)}.md`")
         lines.append("")
 
     lines.append("## グローバル変数")
@@ -53,16 +87,7 @@ def render_markdown(result: AnalysisResult) -> str:
         lines.append("関数/メソッド候補は見つかりませんでした。")
         lines.append("")
     for function in result.functions:
-        lines.append(f"### `{function.qualified_name}`")
-        lines.append("")
-        lines.append(f"- 場所: `{function.location.file}:{function.location.line}-{function.end_line}`")
-        lines.append(f"- 戻り値: `{function.return_type}`")
-        lines.append(f"- 引数: {format_parameters(function.parameters)}")
-        lines.append(f"- グローバル読み取り候補: {format_names(function.reads_globals)}")
-        lines.append(f"- グローバル書き込み候補: {format_names(function.writes_globals)}")
-        lines.append(f"- 呼び出し候補: {format_names(function.calls)}")
-        lines.append(f"- 変数レンジの手掛かり: {format_ranges(function.variable_ranges)}")
-        lines.append("")
+        lines.extend(render_function_section(function))
 
     lines.append("## 解析メモ")
     lines.append("")
@@ -71,6 +96,76 @@ def render_markdown(result: AnalysisResult) -> str:
     lines.append("- 精度を上げる場合は、`compile_commands.json` と libclang/clangd を使うAST解析の追加が次の拡張候補です。")
     lines.append("")
     return "\n".join(lines)
+
+
+def render_class_markdown(class_info: ClassInfo, functions: list[FunctionInfo]) -> str:
+    lines: list[str] = []
+    lines.append(f"# `{class_info.name}` 設計書")
+    lines.append("")
+    lines.append("## 概要")
+    lines.append("")
+    lines.append(f"- 種別: `{class_info.kind}`")
+    lines.append(f"- 宣言場所: `{class_info.location.file}:{class_info.location.line}-{class_info.end_line}`")
+    lines.append(f"- 継承/基底: {format_names(class_info.bases)}")
+    lines.append("")
+
+    lines.append("## 役割")
+    lines.append("")
+    lines.append("- 静的解析だけでは業務上の役割は確定できません。クラス名、メンバ変数、メソッド名からレビュー時に補完してください。")
+    lines.append("")
+
+    lines.append("## メンバ変数")
+    lines.append("")
+    if not class_info.members:
+        lines.append("メンバ変数候補は見つかりませんでした。")
+        lines.append("")
+    for member in class_info.members:
+        initializer = member.get("initializer") or "(なし)"
+        lines.append(f"### `{member['name']}`")
+        lines.append("")
+        lines.append(f"- 型: `{member['type']}`")
+        lines.append(f"- 初期値: `{initializer}`")
+        lines.append(f"- 取りうる範囲: 静的解析結果からは未確定")
+        lines.append("")
+
+    lines.append("## メソッド")
+    lines.append("")
+    if not functions:
+        lines.append("メソッド候補は見つかりませんでした。")
+        lines.append("")
+    for function in functions:
+        lines.extend(render_function_section(function))
+
+    lines.append("## グローバル変数への影響")
+    lines.append("")
+    read_globals = sorted({name for function in functions for name in function.reads_globals})
+    written_globals = sorted({name for function in functions for name in function.writes_globals})
+    lines.append(f"- 読み取り候補: {format_names(read_globals)}")
+    lines.append(f"- 書き込み候補: {format_names(written_globals)}")
+    lines.append("")
+
+    lines.append("## 注意点")
+    lines.append("")
+    lines.append("- このファイルはクラス宣言とメソッド定義候補をもとに自動生成されています。")
+    lines.append("- インライン定義、マクロ、テンプレート、条件コンパイルを含む場合は手動レビューで補正してください。")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_function_section(function: FunctionInfo) -> list[str]:
+    lines = []
+    lines.append(f"### `{function.qualified_name}`")
+    lines.append("")
+    lines.append(f"- 所属クラス: `{function.class_name or '(なし)'}`")
+    lines.append(f"- 場所: `{function.location.file}:{function.location.line}-{function.end_line}`")
+    lines.append(f"- 戻り値: `{function.return_type}`")
+    lines.append(f"- 引数: {format_parameters(function.parameters)}")
+    lines.append(f"- グローバル読み取り候補: {format_names(function.reads_globals)}")
+    lines.append(f"- グローバル書き込み候補: {format_names(function.writes_globals)}")
+    lines.append(f"- 呼び出し候補: {format_names(function.calls)}")
+    lines.append(f"- 変数レンジの手掛かり: {format_ranges(function.variable_ranges)}")
+    lines.append("")
+    return lines
 
 
 def format_locations(locations) -> str:
@@ -85,6 +180,12 @@ def format_names(names: list[str]) -> str:
     return ", ".join(f"`{name}`" for name in sorted(set(names)))
 
 
+def format_members(members: list[dict[str, str]]) -> str:
+    if not members:
+        return "(なし)"
+    return ", ".join(f"`{member['type']} {member['name']}`" for member in members)
+
+
 def format_parameters(parameters: list[dict[str, str]]) -> str:
     if not parameters:
         return "(なし)"
@@ -95,3 +196,7 @@ def format_ranges(ranges: dict[str, list[str]]) -> str:
     if not ranges:
         return "(なし)"
     return "; ".join(f"`{name}`: {', '.join(values)}" for name, values in ranges.items())
+
+
+def safe_filename(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "class"
